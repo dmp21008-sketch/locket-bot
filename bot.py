@@ -64,7 +64,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("locket-bot")
 
 CODE_RE = re.compile(rf"{re.escape(PAY_PREFIX)}[0-9A-F]{{8}}")
-CLAIMABLE = ("pending_payment", "paid_waiting", "failed")
+CLAIMABLE = ("pending_payment", "paid_waiting", "paid_waiting_installation", "install_confirmed", "failed")
 
 # ---------- DB ----------
 db = sqlite3.connect(os.getenv("DB_PATH", "orders.db"), check_same_thread=False)
@@ -179,7 +179,12 @@ async def fulfill(order_id: str, bot) -> tuple[bool, str]:
     if is_ok(res) and granted.get("status") == "active" and granted.get("packageId") == pkg:
         set_status(order_id, "done")
         await bot.send_message(
-            tg_id, f"🎉 Đã nâng cấp Locket Gold cho @{user}! Mở app Locket để kiểm tra nhé."
+            tg_id,
+            "✨ <b>LOCKET GOLD ĐÃ KÍCH HOẠT!</b>\n\n"
+            f"👤 Tài khoản: <code>@{user}</code>\n"
+            f"📦 Gói: <b>{PACKAGES[pkg][0]}</b>\n\n"
+            "Mở Locket để kiểm tra trạng thái Gold nhé. Cảm ơn bạn đã ủng hộ!",
+            parse_mode="HTML",
         )
         return True, ""
 
@@ -192,13 +197,48 @@ async def fulfill(order_id: str, bot) -> tuple[bool, str]:
 async def edit(q, text: str, markup=None) -> None:
     """Sửa tin nhắn dù nó là ảnh (caption) hay chữ."""
     if q.message.photo:
-        await q.edit_message_caption(text, reply_markup=markup)
+        await q.edit_message_caption(text, reply_markup=markup, parse_mode="HTML")
     else:
-        await q.edit_message_text(text, reply_markup=markup)
+        await q.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
 
 
 def retry_markup(order_id: str) -> Markup:
     return Markup([[Btn("🔁 Cấp Gold / Thử lại", callback_data=f"ok:{order_id}")]])
+
+
+def dns_markup(order_id: str) -> Markup:
+    return Markup([
+        [Btn("✅ Tôi đã cài DNS xong", callback_data=f"dnsdone:{order_id}")],
+        [Btn("↩️ Hủy / quay lại đổi gói", callback_data=f"change:{order_id}")],
+    ])
+
+
+def activate_markup(order_id: str) -> Markup:
+    return Markup([
+        [Btn("⚡ KÍCH HOẠT GOLD", callback_data=f"activate:{order_id}")],
+        [Btn("📖 Xem lại hướng dẫn DNS", callback_data=f"dnshelp:{order_id}")],
+    ])
+
+
+def dns_instructions(order_id: str, user: str, package: str) -> str:
+    return (
+        "🎉 <b>THANH TOÁN THÀNH CÔNG!</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🧾 Mã đơn: <code>{order_id}</code>\n"
+        f"👤 Tài khoản: <code>@{user}</code>\n"
+        f"📦 Gói đã mua: <b>{package}</b>\n\n"
+        "📲 <b>HƯỚNG DẪN CÀI DNS</b>\n\n"
+        "<b>1.</b> Mở Safari, truy cập https://dns.coz.vn để tải Profile.\n"
+        "<b>2.</b> Bấm <b>Cho phép (Allow)</b> khi máy hỏi tải hồ sơ cấu hình.\n"
+        "<b>3.</b> Vào <b>Cài đặt → Đã tải hồ sơ (Profile Downloaded) → Cài đặt</b>, "
+        "nhập mật khẩu máy nếu được yêu cầu rồi tiếp tục cài đặt.\n"
+        "<b>4.</b> Nếu hồ sơ không tự hiện, vào <b>Cài đặt → Cài đặt chung → VPN & Quản lý thiết bị</b> để cài.\n\n"
+        "💡 Nếu đã cài DNS trước đó thì không cần cài lại.\n\n"
+        "⚠️ <b>LƯU Ý QUAN TRỌNG</b>\n"
+        "Không tắt hoặc xóa DNS và không tắt tin cậy chứng chỉ LocketGold. "
+        "Nếu tắt/xóa, Gold có thể bị rớt và không còn hoạt động.\n\n"
+        "Cài xong hãy bấm <b>“Tôi đã cài DNS xong”</b> để tiếp tục."
+    )
 
 
 # ---------- Telegram handlers ----------
@@ -209,7 +249,11 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for pid, (name, price) in PACKAGES.items()
     ]
     await update.message.reply_text(
-        "Chào bạn! Chọn gói Locket Gold muốn mua:", reply_markup=Markup(rows)
+        "💎 <b>LOCKET GOLD STORE</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Nâng cấp tài khoản nhanh chóng, tự động qua SePay.\n\n"
+        "📦 <b>Chọn gói Gold phù hợp:</b>",
+        reply_markup=Markup(rows), parse_mode="HTML"
     )
 
 
@@ -219,8 +263,9 @@ async def choose_package(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     pid = q.data.split(":")[1]
     ctx.user_data.update(pkg=pid, awaiting="username")
     await q.edit_message_text(
-        f"Bạn chọn: {PACKAGES[pid][0]}\n\n"
-        "Gửi username Locket, link Locket hoặc UID của tài khoản cần nâng cấp:"
+        f"💎 <b>GÓI ĐÃ CHỌN</b>\n{PACKAGES[pid][0]}\n\n"
+        "👤 Gửi username Locket, link Locket hoặc UID của tài khoản cần nâng cấp:",
+        parse_mode="HTML"
     )
 
 
@@ -322,6 +367,114 @@ async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def dns_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    order_id = q.data.split(":", 1)[1]
+    order = get_order(order_id)
+    if not order or order[1] != q.from_user.id:
+        await q.answer("Không tìm thấy đơn của bạn.", show_alert=True)
+        return
+    status = order[6]
+    if status == "done":
+        await edit(q, "✅ Đơn này đã được kích hoạt Gold rồi.")
+        return
+    if status not in ("paid_waiting_installation", "install_confirmed", "failed"):
+        await q.answer("Đơn chưa sẵn sàng hoặc đang được xử lý.", show_alert=True)
+        return
+    if status != "install_confirmed":
+        set_status(order_id, "install_confirmed")
+    await edit(
+        q,
+        "✅ <b>ĐÃ XÁC NHẬN CÀI DNS</b>\n\n"
+        "Kiểm tra DNS đã được cài và không bị tắt. Khi sẵn sàng, bấm nút bên dưới để gọi hệ thống kích hoạt Locket Gold.",
+        activate_markup(order_id),
+    )
+
+
+async def dns_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    order_id = q.data.split(":", 1)[1]
+    order = get_order(order_id)
+    if not order or order[1] != q.from_user.id:
+        await q.answer("Không tìm thấy đơn của bạn.", show_alert=True)
+        return
+    await q.message.reply_text(
+        dns_instructions(order_id, order[2], PACKAGES[order[4]][0]),
+        reply_markup=dns_markup(order_id), parse_mode="HTML", disable_web_page_preview=True
+    )
+
+
+async def activate_gold(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    order_id = q.data.split(":", 1)[1]
+    order = get_order(order_id)
+    if not order or order[1] != q.from_user.id:
+        await q.answer("Không tìm thấy đơn của bạn.", show_alert=True)
+        return
+    if order[6] == "done":
+        await q.answer("Gold của đơn này đã được kích hoạt.", show_alert=True)
+        return
+    if order[6] not in ("install_confirmed", "failed"):
+        await q.answer("Vui lòng xác nhận đã cài DNS trước.", show_alert=True)
+        return
+    await q.answer("Đang gửi yêu cầu kích hoạt...")
+    await edit(q, "⏳ <b>ĐANG KÍCH HOẠT LOCKET GOLD</b>\nHệ thống đang xử lý, vui lòng đợi một chút…")
+    ok, msg = await fulfill(order_id, ctx.bot)
+    if ok:
+        await edit(q, "🎉 <b>YÊU CẦU KÍCH HOẠT THÀNH CÔNG!</b>\nMở ứng dụng Locket để kiểm tra Gold nhé.")
+    elif msg == "already":
+        current = get_order(order_id)
+        if current and current[6] == "done":
+            await edit(q, "✅ Đơn này đã kích hoạt Gold rồi.")
+        else:
+            await edit(q, "⏳ Đơn đang được xử lý. Vui lòng đợi và không bấm liên tục.")
+    else:
+        await edit(
+            q,
+            "⚠️ <b>CHƯA KÍCH HOẠT ĐƯỢC</b>\nTiền của bạn vẫn được ghi nhận. Vui lòng thử lại sau hoặc chờ admin hỗ trợ.\n\n"
+            f"Mã đơn: <code>{order_id}</code>",
+            Markup([[Btn("🔁 Thử kích hoạt lại", callback_data=f"activate:{order_id}")]])
+        )
+        await notify_admin(ctx.bot, f"⚠️ Đơn #{order_id} đã thanh toán, khách xác nhận DNS nhưng cấp Gold lỗi: {msg}", retry_markup(order_id))
+
+
+async def change_package(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    order_id = q.data.split(":", 1)[1]
+    order = get_order(order_id)
+    if not order or order[1] != q.from_user.id:
+        await q.answer("Không tìm thấy đơn của bạn.", show_alert=True)
+        return
+    if order[6] == "done":
+        await edit(q, "Đơn này đã kích hoạt Gold. Nếu cần đổi gói, vui lòng liên hệ admin.")
+        return
+    set_status(order_id, "change_requested")
+    await notify_admin(
+        ctx.bot,
+        f"↩️ Khách yêu cầu đổi gói sau khi thanh toán. Đơn #{order_id}, khách {order[1]}, "
+        f"gói {PACKAGES[order[4]][0]} ({order[5]:,}đ). Cần đối soát khoản đã nhận trước khi tạo đơn mới."
+    )
+    await edit(
+        q,
+        "↩️ <b>ĐÃ GHI NHẬN YÊU CẦU ĐỔI GÓI</b>\n\n"
+        "Vì đơn này đã thanh toán, hệ thống giữ nguyên thông tin để tránh mất tiền hoặc cấp nhầm gói. "
+        "Admin sẽ kiểm tra khoản thanh toán trước khi bạn tạo đơn mới.\n\n"
+        "Bạn có thể quay lại menu gói, nhưng vui lòng không thanh toán đơn mới cho đến khi được xác nhận.",
+        Markup([[Btn("📦 Quay lại menu gói", callback_data="restart")]])
+    )
+
+
+async def restart_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    ctx.user_data.clear()
+    rows = [[Btn(f"{name} - {price:,}đ", callback_data=f"pkg:{pid}")] for pid, (name, price) in PACKAGES.items()]
+    await edit(q, "💎 <b>LOCKET GOLD STORE</b>\n━━━━━━━━━━━━━━━━━━\n📦 Chọn gói Gold muốn mua:", Markup(rows))
+
+
 async def admin_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if q.from_user.id != ADMIN_ID:
@@ -333,6 +486,9 @@ async def admin_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not order:
         return
     tg_id, status = order[1], order[6]
+    if action == "ok" and status not in ("install_confirmed", "failed"):
+        await edit(q, f"Đơn #{order_id} chưa được khách xác nhận cài DNS. Chưa thể cấp Gold.")
+        return
     if status == "done":
         await edit(q, f"Đơn #{order_id} đã cấp rồi.")
         return
@@ -443,16 +599,30 @@ async def handle_payment(bot, data: dict) -> None:
                        "Bạn chuyển bù phần thiếu hoặc nhắn admin nhé."
             )
             return
-        ok, msg = await fulfill(order_id, bot)
-        if ok:
-            await notify_admin(bot, f"💰 Đơn #{order_id} ({PACKAGES[pkg][0]}, {amount:,}đ) đã thanh toán & cấp tự động cho @{user}.")
-        elif msg != "already":
-            await bot.send_message(
-                tg_id, f"Mình đã nhận tiền cho đơn #{order_id}. Admin sẽ xử lý nâng cấp trong ít phút nhé."
-            )
+        # Đánh dấu đã thanh toán và yêu cầu khách hoàn tất bước DNS trước khi gọi /grant.
+        if status in ("pending_payment", "paid_waiting", "failed"):
+            set_status(order_id, "paid_waiting_installation")
+            try:
+                await bot.send_message(
+                    tg_id, dns_instructions(order_id, user, PACKAGES[pkg][0]),
+                    reply_markup=dns_markup(order_id), parse_mode="HTML", disable_web_page_preview=True
+                )
+            except Exception:
+                log.exception("send DNS instructions fail for %s", order_id)
+                await notify_admin(bot, f"⚠️ Đã nhận tiền đơn #{order_id} nhưng không gửi được hướng dẫn DNS cho khách {tg_id}.")
             await notify_admin(
-                bot, f"⚠️ Đơn #{order_id} đã nhận {amount:,}đ nhưng cấp Gold lỗi\n{msg}", retry_markup(order_id)
+                bot,
+                f"💰 <b>ĐÃ NHẬN THANH TOÁN</b>\nĐơn: <code>{order_id}</code>\n"
+                f"Gói: {PACKAGES[pkg][0]} — {amount:,}đ\nTài khoản: @{user}\n"
+                "⏳ Đang chờ khách xác nhận cài DNS; Gold chưa được cấp.",
             )
+        elif status == "install_confirmed":
+            # Webhook trùng giao dịch không được tự kích hoạt Gold.
+            return
+        elif status == "paid_waiting_installation":
+            return
+        elif status == "change_requested":
+            await notify_admin(bot, f"⚠️ Đơn #{order_id} đã thanh toán nhưng khách yêu cầu đổi gói. Cần đối soát trước khi xử lý.")
     except Exception:
         log.exception("handle_payment fail")
         await notify_admin(bot, f"⚠️ Lỗi xử lý webhook: {data}")
@@ -495,6 +665,11 @@ async def run() -> None:
     tg.add_handler(CallbackQueryHandler(choose_package, pattern=r"^pkg:"))
     tg.add_handler(CallbackQueryHandler(confirm, pattern=r"^confirm$"))
     tg.add_handler(CallbackQueryHandler(redo, pattern=r"^redo$"))
+    tg.add_handler(CallbackQueryHandler(dns_done, pattern=r"^dnsdone:"))
+    tg.add_handler(CallbackQueryHandler(dns_help, pattern=r"^dnshelp:"))
+    tg.add_handler(CallbackQueryHandler(activate_gold, pattern=r"^activate:"))
+    tg.add_handler(CallbackQueryHandler(change_package, pattern=r"^change:"))
+    tg.add_handler(CallbackQueryHandler(restart_menu, pattern=r"^restart$"))
     tg.add_handler(CallbackQueryHandler(admin_action, pattern=r"^(ok|no):"))
     tg.add_handler(MessageHandler(filters.PHOTO, on_photo))
     tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
